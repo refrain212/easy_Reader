@@ -57,6 +57,9 @@ yueduqi/
 - 内置字体：宋体 / 楷体 / 仿宋 / 黑体 / 等宽；支持导入本地 `.ttf/.woff/.woff2/.otf` 字体文件
 - 浅色 / 深色主题切换
 
+### 划线
+目前支持简单的划线功能，主要功能如下![alt text](image.png)
+右键可以删除划线和高亮![alt text](image-1.png)
 ---
 
 ## app.js 功能分区
