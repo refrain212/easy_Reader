@@ -25,8 +25,24 @@ let fontFamily = "'Source Han Serif CN','思源宋体','STSong','SimSun',serif";
 let currentNoteChapter = '';
 let currentNoteLineIndex = 0;
 let currentAnnotations = [];
+let tocEditMode = false;
+let tocEntriesBeforeEdit = [];
 let pendingAnnot = null;
 let annotCtxAid  = null;
+let lastColorIdx     = 0;
+let pendingAnnotType = null;
+let autoMatchEnabled = false;
+let _aidCtr = Date.now();
+function genAid() { return _aidCtr++; }
+
+const ANNOT_COLORS = [
+    { dot: '#f9ca24', hl: '#fff3a0', dec: '#9a7e00' },
+    { dot: '#ff6b81', hl: '#ffc0c8', dec: '#c52040' },
+    { dot: '#a29bfe', hl: '#d8d0ff', dec: '#5040b0' },
+    { dot: '#74b9ff', hl: '#c0dcff', dec: '#1850a0' },
+    { dot: '#55efc4', hl: '#b0f8e8', dec: '#007858' },
+    { dot: '#fd9644', hl: '#ffd4a0', dec: '#a05820' },
+];
 
 const FONT_FAMILIES = [
     { name: '宋体', value: "'Source Han Serif CN','思源宋体','STSong','SimSun',serif" },
@@ -198,6 +214,28 @@ async function saveAnnotations(bookId, annotations) {
     });
 }
 
+async function getCustomToc(bookId) {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+        const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(bookId);
+        req.onsuccess = e => res(e.target.result?.customToc ?? null);
+        req.onerror   = rej;
+    });
+}
+
+async function saveCustomToc(bookId, toc) {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+        const store = db.transaction(STORE, 'readwrite').objectStore(STORE);
+        const req = store.get(bookId);
+        req.onsuccess = e => {
+            if (!e.target.result) { res(); return; }
+            store.put({ ...e.target.result, customToc: toc }).onsuccess = res;
+        };
+        req.onerror = rej;
+    });
+}
+
 // ── File open ──
 document.getElementById('btn-open').onclick = () => fi.click();
 fi.onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); fi.value = ''; };
@@ -229,6 +267,8 @@ async function loadFile(file) {
         document.title = file.name.replace(/\.[^.]+$/, '') + ' — 简单阅读器';
         currentAnnotations = await getAnnotations(currentBookId);
         applyAnnotations();
+        const ct0 = await getCustomToc(currentBookId);
+        if (ct0 !== null) { tocEntries = ct0; renderToc(); }
     } catch (err) {
         console.error(err);
         alert('加载失败：' + err.message);
@@ -407,20 +447,32 @@ async function render(text) {
 function renderToc() {
     tl.innerHTML = '';
     if (tocEntries.length === 0) {
-        tl.innerHTML = '<div style="padding:10px 14px;color:var(--muted);font-size:12px;">未检测到目录结构</div>';
+        tl.innerHTML = '<div style="padding:10px 14px;color:var(--muted);font-size:12px;">' +
+            (tocEditMode ? '暂无条目，请在下方添加' : '未检测到目录结构') + '</div>';
         return;
     }
     const frag = document.createDocumentFragment();
-    tocEntries.forEach(e => {
+    tocEntries.forEach((e, idx) => {
         const d = document.createElement('div');
         d.className = 'ti l' + e.level;
-        d.textContent = e.title;
         d.title = e.title;
         d.dataset.line = e.lineIndex;
+        d.appendChild(document.createTextNode(e.title));
         d.onclick = () => {
-            closeToc();
-            scrollToLine(e.lineIndex);
+            if (!tocEditMode) { closeToc(); scrollToLine(e.lineIndex); }
         };
+        if (tocEditMode) {
+            const del = document.createElement('button');
+            del.className = 'ti-del';
+            del.textContent = '✕';
+            del.title = '删除此条目';
+            del.onclick = ev => {
+                ev.stopPropagation();
+                tocEntries = tocEntries.filter((_, i) => i !== idx);
+                renderToc();
+            };
+            d.appendChild(del);
+        }
         frag.appendChild(d);
     });
     tl.appendChild(frag);
@@ -708,7 +760,77 @@ function updateUI() {
 
 // ── TOC panel ──
 function openToc()  { tocPanel.classList.add('open'); tocBackdrop.classList.add('open'); }
-function closeToc() { tocPanel.classList.remove('open'); tocBackdrop.classList.remove('open'); }
+function closeToc() {
+    if (tocEditMode) exitTocEditMode(false); // discard unsaved changes
+    tocPanel.classList.remove('open'); tocBackdrop.classList.remove('open');
+}
+
+// ── TOC editor ──
+function enterTocEditMode() {
+    if (!currentBookId) return;
+    tocEntriesBeforeEdit = tocEntries.map(e => ({ ...e }));
+    tocEditMode = true;
+    tocPanel.classList.add('edit-mode');
+    // Update position input placeholder based on current layout
+    document.getElementById('teb-pos').placeholder = layoutMode === 'columns' ? '页码' : '行号';
+    renderToc();
+}
+
+function exitTocEditMode(save) {
+    tocEditMode = false;
+    tocPanel.classList.remove('edit-mode');
+    if (save) {
+        saveCustomToc(currentBookId, tocEntries.map(e => ({ ...e })));
+    } else {
+        tocEntries = tocEntriesBeforeEdit;
+        renderToc();
+    }
+    tocEntriesBeforeEdit = [];
+}
+
+document.getElementById('toc-edit-btn').onclick = () => {
+    if (tocEditMode) exitTocEditMode(true);
+    else enterTocEditMode();
+};
+
+document.getElementById('teb-cur').onclick = () => {
+    const inp = document.getElementById('teb-pos');
+    if (layoutMode === 'columns') {
+        inp.placeholder = '页码';
+        inp.value = currentPage + 1;
+    } else {
+        inp.placeholder = '行号';
+        inp.value = currentNoteLineIndex + 1;
+    }
+};
+
+document.getElementById('teb-add').onclick = () => {
+    const title = document.getElementById('teb-title').value.trim();
+    const pos   = parseInt(document.getElementById('teb-pos').value, 10);
+    const level = parseInt(document.getElementById('teb-level').value, 10);
+    if (!title || isNaN(pos) || pos < 1) return;
+    let lineIndex;
+    if (layoutMode === 'columns') {
+        const page = Math.max(0, Math.min(pos - 1, totalPages - 1));
+        lineIndex = pageLineMap[page]?.[0] ?? 0;
+    } else {
+        lineIndex = Math.max(0, Math.min(pos - 1, rawLines.length - 1));
+    }
+    tocEntries = [...tocEntries, { level, title, lineIndex }];
+    tocEntries.sort((a, b) => a.lineIndex - b.lineIndex);
+    document.getElementById('teb-title').value = '';
+    document.getElementById('teb-pos').value   = '';
+    renderToc();
+};
+
+document.getElementById('teb-reset').onclick = async () => {
+    if (!currentBookId) return;
+    tocEntries = detectToc(rawLines);
+    await saveCustomToc(currentBookId, null);
+    exitTocEditMode(false);
+};
+
+document.getElementById('teb-done').onclick = () => exitTocEditMode(true);
 document.getElementById('toc-close').onclick = closeToc;
 tocBackdrop.onclick = closeToc;
 
@@ -792,26 +914,60 @@ function getTextOffset(lineEl, node, offset) {
     return total;
 }
 
+function combineAnnotStyles(anns) {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    const parts = [], decorParts = [];
+    let hasLine = false;
+    for (const a of anns) {
+        const c = ANNOT_COLORS[a.colorIdx ?? 0];
+        if (a.type === 'hl')   parts.push(`background:${dark ? c.dec : c.hl}`);
+        if (a.type === 'wave') decorParts.push(`underline wavy ${c.dec}`);
+        if (a.type === 'line') { decorParts.push(`underline ${c.dec}`); hasLine = true; }
+    }
+    if (decorParts.length) parts.push(`text-decoration:${decorParts.join(',')}`);
+    if (hasLine) parts.push('text-underline-offset:2px');
+    return parts.join(';');
+}
+
+function findAllOccurrences(text) {
+    const results = [];
+    for (let li = 0; li < rawLines.length; li++) {
+        const line = rawLines[li];
+        let pos = 0;
+        while (pos < line.length) {
+            const idx = line.indexOf(text, pos);
+            if (idx === -1) break;
+            results.push({ lineIndex: li, start: idx, end: idx + text.length });
+            pos = idx + 1;
+        }
+    }
+    return results;
+}
+
 function applyAnnotationsToLine(el, lineIndex) {
     const anns = currentAnnotations.filter(a => a.lineIndex === lineIndex);
     if (!anns.length) {
-        if (el.querySelector('.annot-hl,.annot-wave,.annot-line')) {
-            el.textContent = rawLines[lineIndex];
-        }
+        if (el.querySelector('[data-aid]')) el.textContent = rawLines[lineIndex];
         return;
     }
     const text = rawLines[lineIndex];
-    anns.sort((a, b) => a.start - b.start);
-    let html = '', last = 0;
-    for (const a of anns) {
-        const s = Math.max(a.start, last);
-        const e = Math.min(a.end, text.length);
+    // Collect all boundary points then render each segment with merged styles
+    const pts = new Set([0, text.length]);
+    anns.forEach(a => { pts.add(Math.max(0, a.start)); pts.add(Math.min(text.length, a.end)); });
+    const sorted = [...pts].sort((a, b) => a - b);
+    let html = '';
+    for (let i = 0; i < sorted.length - 1; i++) {
+        const s = sorted[i], e = sorted[i + 1];
         if (s >= e) continue;
-        html += esc(text.slice(last, s));
-        html += `<span class="annot-${a.type}" data-aid="${a.id}">${esc(text.slice(s, e))}</span>`;
-        last = e;
+        const covering = anns.filter(a => a.start <= s && a.end >= e);
+        if (!covering.length) {
+            html += esc(text.slice(s, e));
+        } else {
+            const style = combineAnnotStyles(covering);
+            const aids  = covering.map(a => a.id).join(',');
+            html += `<span class="annot-seg" data-aid="${aids}" style="${style}">${esc(text.slice(s, e))}</span>`;
+        }
     }
-    html += esc(text.slice(last));
     el.innerHTML = html;
 }
 
@@ -825,23 +981,50 @@ function applyAnnotations() {
 }
 
 // ── Annotation popup ──
-const annotMenu   = document.getElementById('annot-menu');
-const annotCtxEl  = document.getElementById('annot-ctx');
+const annotMenu  = document.getElementById('annot-menu');
+const annotCtxEl = document.getElementById('annot-ctx');
+const acpEl      = document.getElementById('acp');
+const acpMatchCb = document.getElementById('acp-match-cb');
+
+function showAmTypes() {
+    document.querySelector('.am-types').style.display = '';
+    acpEl.style.display = 'none';
+    pendingAnnotType = null;
+}
+
+function openColorPicker(type) {
+    pendingAnnotType = type;
+    document.querySelector('.am-types').style.display = 'none';
+    acpEl.style.display = 'flex';
+    document.querySelectorAll('.acp-dot').forEach((d, i) =>
+        d.classList.toggle('active', i === lastColorIdx));
+}
+
+function positionAnnotMenu(selRect) {
+    const mh = annotMenu.offsetHeight;
+    const mw = annotMenu.offsetWidth;
+    let cx = selRect.left + selRect.width / 2;
+    let top = selRect.top - mh - 10;
+    if (cx - mw / 2 < 8)                       cx = mw / 2 + 8;
+    if (cx + mw / 2 > window.innerWidth - 8)    cx = window.innerWidth - mw / 2 - 8;
+    if (top < 6) top = selRect.bottom + 10;
+    annotMenu.style.left = cx + 'px';
+    annotMenu.style.top  = top + 'px';
+}
 
 function showAnnotMenu(rect, lineIndex, start, end, text) {
     pendingAnnot = { lineIndex, start, end, text };
-    const cx = rect.left + rect.width / 2;
-    const popH = 78;
-    let top = rect.top - popH - 10;
-    if (top < 6) top = rect.bottom + 10; // flip below if near top edge
-    annotMenu.style.left = cx + 'px';
-    annotMenu.style.top  = top + 'px';
+    showAmTypes();
+    annotMenu.style.left = '-9999px';
     annotMenu.classList.add('visible');
+    requestAnimationFrame(() => positionAnnotMenu(rect));
 }
 
 function hideAnnotMenu() {
     annotMenu.classList.remove('visible');
     pendingAnnot = null;
+    showAmTypes();
+    if (CSS.highlights) CSS.highlights.delete('annot-sel');
 }
 
 function hideAnnotCtx() {
@@ -849,9 +1032,33 @@ function hideAnnotCtx() {
     annotCtxAid = null;
 }
 
+// Build color dots once
+(function buildColorDots() {
+    const container = document.getElementById('acp-dots');
+    ANNOT_COLORS.forEach((c, i) => {
+        const dot = document.createElement('button');
+        dot.className = 'acp-dot' + (i === lastColorIdx ? ' active' : '');
+        dot.style.background = c.dot;
+        dot.textContent = '✓';
+        dot.title = '';
+        dot.onclick = () => {
+            lastColorIdx = i;
+            document.querySelectorAll('.acp-dot').forEach((d, j) =>
+                d.classList.toggle('active', j === i));
+            addAnnotation(pendingAnnotType, i);
+        };
+        container.appendChild(dot);
+    });
+})();
+
+acpMatchCb.checked = autoMatchEnabled;
+acpMatchCb.onchange = () => { autoMatchEnabled = acpMatchCb.checked; };
+
+document.getElementById('acp-back').onclick = () => showAmTypes();
+
 document.addEventListener('mousedown', e => {
-    if (!annotMenu.contains(e.target))   hideAnnotMenu();
-    if (!annotCtxEl.contains(e.target))  hideAnnotCtx();
+    if (!annotMenu.contains(e.target))  hideAnnotMenu();
+    if (!annotCtxEl.contains(e.target)) hideAnnotCtx();
 });
 
 document.addEventListener('mouseup', () => {
@@ -868,7 +1075,12 @@ document.addEventListener('mouseup', () => {
     const end   = getTextOffset(startLineEl, range.endContainer,   range.endOffset);
     if (start >= end) return;
     const selText = rawLines[lineIndex].slice(start, end);
-    showAnnotMenu(range.getBoundingClientRect(), lineIndex, start, end, selText);
+    const rect = range.getBoundingClientRect();
+    if (CSS.highlights) {
+        CSS.highlights.set('annot-sel', new Highlight(range.cloneRange()));
+    }
+    sel.removeAllRanges();
+    showAnnotMenu(rect, lineIndex, start, end, selText);
 });
 
 rd.addEventListener('contextmenu', e => {
@@ -876,33 +1088,64 @@ rd.addEventListener('contextmenu', e => {
     const span = e.target.closest('[data-aid]');
     if (!span) return;
     hideAnnotMenu();
-    annotCtxAid = parseInt(span.dataset.aid, 10);
+    const aids = span.dataset.aid.split(',').map(Number);
+    const anns = aids.map(id => currentAnnotations.find(a => a.id === id)).filter(Boolean);
+    if (!anns.length) return;
+    const typeLabel = { hl: '马克笔', wave: '波浪线', line: '直线' };
+    annotCtxEl.innerHTML = '';
+    anns.forEach(ann => {
+        const btn = document.createElement('button');
+        btn.className = 'annot-ctx-item';
+        btn.textContent = `删除 ${typeLabel[ann.type] || ann.type}`;
+        btn.onclick = () => { hideAnnotCtx(); deleteAnnotation(ann.id); };
+        annotCtxEl.appendChild(btn);
+    });
     annotCtxEl.style.left = e.clientX + 'px';
     annotCtxEl.style.top  = e.clientY + 'px';
     annotCtxEl.classList.add('visible');
 });
 
-document.getElementById('annot-ctx-del').onclick = async () => {
-    if (annotCtxAid === null || !currentBookId) { hideAnnotCtx(); return; }
-    const aid = annotCtxAid;
-    hideAnnotCtx();
+async function deleteAnnotation(aid) {
     const delAnn = currentAnnotations.find(a => a.id === aid);
-    currentAnnotations = currentAnnotations.filter(a => a.id !== aid);
-    await saveAnnotations(currentBookId, currentAnnotations);
-    if (delAnn) {
-        const el = lineElements[delAnn.lineIndex];
-        if (el) applyAnnotationsToLine(el, delAnn.lineIndex);
+    if (!delAnn || !currentBookId) return;
+    let affectedLines;
+    if (delAnn.groupId != null) {
+        const grp = currentAnnotations.filter(a => a.groupId === delAnn.groupId);
+        affectedLines = new Set(grp.map(a => a.lineIndex));
+        currentAnnotations = currentAnnotations.filter(a => a.groupId !== delAnn.groupId);
+    } else {
+        affectedLines = new Set([delAnn.lineIndex]);
+        currentAnnotations = currentAnnotations.filter(a => a.id !== aid);
     }
-};
-
-async function addAnnotation(type) {
-    if (!pendingAnnot || !currentBookId) { hideAnnotMenu(); return; }
-    const { lineIndex, start, end } = pendingAnnot;
-    const ann = { id: Date.now(), lineIndex, start, end, type, createdAt: Date.now() };
-    currentAnnotations.push(ann);
     await saveAnnotations(currentBookId, currentAnnotations);
-    const el = lineElements[lineIndex];
-    if (el) applyAnnotationsToLine(el, lineIndex);
+    affectedLines.forEach(li => { const el = lineElements[li]; if (el) applyAnnotationsToLine(el, li); });
+}
+
+async function addAnnotation(type, colorIdx) {
+    if (!pendingAnnot || !currentBookId) { hideAnnotMenu(); return; }
+    const { lineIndex, start, end, text } = pendingAnnot;
+    const gid = autoMatchEnabled ? genAid() : null;
+    const newAnns = [{
+        id: genAid(), lineIndex, start, end, type, colorIdx,
+        createdAt: Date.now(), groupId: gid, matchText: autoMatchEnabled ? text : null,
+    }];
+    if (autoMatchEnabled && text.length > 0) {
+        let matched = 0;
+        for (const occ of findAllOccurrences(text)) {
+            if (occ.lineIndex === lineIndex && occ.start === start) continue;
+            const dup = currentAnnotations.some(a =>
+                a.lineIndex === occ.lineIndex && a.start === occ.start &&
+                a.end === occ.end && a.type === type);
+            if (dup) continue;
+            newAnns.push({ id: genAid(), lineIndex: occ.lineIndex, start: occ.start,
+                end: occ.end, type, colorIdx, createdAt: Date.now(), groupId: gid, matchText: text });
+            if (++matched >= 200) break;
+        }
+    }
+    currentAnnotations.push(...newAnns);
+    await saveAnnotations(currentBookId, currentAnnotations);
+    const affected = new Set(newAnns.map(a => a.lineIndex));
+    affected.forEach(li => { const el = lineElements[li]; if (el) applyAnnotationsToLine(el, li); });
     hideAnnotMenu();
     window.getSelection()?.removeAllRanges();
 }
@@ -912,9 +1155,9 @@ document.getElementById('am-copy').onclick = () => {
     hideAnnotMenu();
     window.getSelection()?.removeAllRanges();
 };
-document.getElementById('am-hl').onclick   = () => addAnnotation('hl');
-document.getElementById('am-wave').onclick = () => addAnnotation('wave');
-document.getElementById('am-line').onclick = () => addAnnotation('line');
+document.getElementById('am-hl').onclick   = () => openColorPicker('hl');
+document.getElementById('am-wave').onclick = () => openColorPicker('wave');
+document.getElementById('am-line').onclick = () => openColorPicker('line');
 document.getElementById('am-note').onclick = () => {
     if (!pendingAnnot) { hideAnnotMenu(); return; }
     const quoted = `「${pendingAnnot.text}」\n`;
@@ -1184,6 +1427,7 @@ document.getElementById('sb-theme').onclick = () => {
     const btn = document.getElementById('sb-theme');
     btn.textContent = dark ? '☀️' : '🌙';
     btn.title = dark ? '浅色模式' : '深色模式';
+    if (currentAnnotations.length) applyAnnotations();
 };
 
 // ── showState ──
@@ -1255,6 +1499,8 @@ async function openBookFromShelf(book) {
     document.title = book.name + ' — 简单阅读器';
     currentAnnotations = await getAnnotations(book.id);
     applyAnnotations();
+    const ct1 = await getCustomToc(book.id);
+    if (ct1 !== null) { tocEntries = ct1; renderToc(); }
     if (book.lastLine > 0) {
         // Columns mode applies asynchronously (double-RAF); use longer delay
         setTimeout(() => scrollToLine(book.lastLine), layoutMode === 'columns' ? 250 : 80);

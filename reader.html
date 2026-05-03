@@ -27,16 +27,28 @@
 
 <!-- Annotation popup menu -->
 <div id="annot-menu">
-    <button class="am-btn" id="am-copy"><span class="am-icon">⎘</span><span class="am-lbl">复制</span></button>
-    <button class="am-btn" id="am-hl"><span class="am-icon am-icon-hl">A</span><span class="am-lbl">马克笔</span></button>
-    <button class="am-btn" id="am-wave"><span class="am-icon am-icon-wave">A</span><span class="am-lbl">波浪线</span></button>
-    <button class="am-btn" id="am-line"><span class="am-icon am-icon-line">A</span><span class="am-lbl">直线</span></button>
-    <button class="am-btn" id="am-note"><span class="am-icon">✏</span><span class="am-lbl">写想法</span></button>
+    <!-- State 1: type selection -->
+    <div class="am-types">
+        <button class="am-btn" id="am-copy"><span class="am-icon">⎘</span><span class="am-lbl">复制</span></button>
+        <button class="am-btn" id="am-hl"><span class="am-icon am-icon-hl">A</span><span class="am-lbl">马克笔</span></button>
+        <button class="am-btn" id="am-wave"><span class="am-icon am-icon-wave">A</span><span class="am-lbl">波浪线</span></button>
+        <button class="am-btn" id="am-line"><span class="am-icon am-icon-line">A</span><span class="am-lbl">直线</span></button>
+        <button class="am-btn" id="am-note"><span class="am-icon">✏</span><span class="am-lbl">写想法</span></button>
+    </div>
+    <!-- State 2: color picker -->
+    <div id="acp">
+        <div id="acp-top">
+            <button id="acp-back" title="返回">←</button>
+            <div id="acp-dots"></div>
+        </div>
+        <label id="acp-match-lbl">
+            <input type="checkbox" id="acp-match-cb">
+            <span>全文匹配</span>
+        </label>
+    </div>
 </div>
-<!-- Annotation right-click context menu -->
-<div id="annot-ctx">
-    <button id="annot-ctx-del">删除标注</button>
-</div>
+<!-- Annotation right-click context menu (buttons built dynamically) -->
+<div id="annot-ctx"></div>
 
 <!-- Page navigation (columns mode) -->
 <div id="pg-nav">
@@ -50,9 +62,29 @@
 <div id="toc-panel">
     <div id="toc-head">
         <span>目 录</span>
-        <button id="toc-close" title="关闭">✕</button>
+        <div style="display:flex;gap:4px;align-items:center">
+            <button id="toc-edit-btn" title="编辑目录">✎</button>
+            <button id="toc-close" title="关闭">✕</button>
+        </div>
     </div>
     <div id="toc-list"></div>
+    <!-- TOC edit bar (visible in edit mode only) -->
+    <div id="toc-edit-bar">
+        <input id="teb-title" type="text" placeholder="章节标题" autocomplete="off">
+        <div class="teb-row">
+            <input id="teb-pos" type="number" min="1" placeholder="行号" title="行号或页码">
+            <button id="teb-cur" title="填入当前阅读位置">当前位置</button>
+            <select id="teb-level">
+                <option value="1">一级</option>
+                <option value="2">二级</option>
+            </select>
+        </div>
+        <div class="teb-row teb-btns">
+            <button id="teb-add">＋ 添加</button>
+            <button id="teb-reset">恢复自动</button>
+            <button id="teb-done">完成</button>
+        </div>
+    </div>
 </div>
 
 <!-- Notes Panel -->
