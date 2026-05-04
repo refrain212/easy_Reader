@@ -549,7 +549,13 @@ document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
         if (rp.style.display !== 'none') { hidePanel(); }
-        else { si.focus(); si.select(); if (results.length > 0) showPanel(); }
+        else {
+            si.focus(); si.select(); showPanel();
+            if (!results.length) {
+                rpCnt.textContent = '';
+                rpBd.innerHTML = '<p style="padding:24px 0;color:var(--muted);text-align:center;font-size:14px">请在上方搜索框输入关键词</p>';
+            }
+        }
         return;
     }
     if (e.key === 'Escape' && document.activeElement !== si) {
@@ -1179,7 +1185,8 @@ fpSlider.addEventListener('input', () => {
     fontSize = +fpSlider.value;
     fpSizeVal.textContent = fontSize;
     rd.style.fontSize = fontSize + 'px';
-    layoutCache = null; // font size change invalidates page map
+    layoutCache = null;
+    if (layoutMode === 'columns') applyColumnsMode();
 });
 
 function rebuildFontGrid() {
@@ -1199,6 +1206,7 @@ function rebuildFontGrid() {
             grid.querySelectorAll('.fp-ff-btn').forEach(b =>
                 b.classList.toggle('active', b.dataset.value === fontFamily)
             );
+            if (layoutMode === 'columns') applyColumnsMode();
         };
         grid.appendChild(btn);
     });
@@ -1231,6 +1239,7 @@ fontFileInput.onchange = async () => {
         rd.style.fontFamily = fontFamily;
         layoutCache = null;
         rebuildFontGrid();
+        if (layoutMode === 'columns') applyColumnsMode();
     } catch (err) {
         alert('字体加载失败：' + err.message);
         URL.revokeObjectURL(url);
@@ -1241,43 +1250,59 @@ document.getElementById('font-close').onclick = closeFont;
 fontBackdrop.onclick = closeFont;
 
 // ── Layout / pagination ──
-// Each page renders ONLY its own lines — no translateX sliding strip.
-// Flow: measure full layout → build pageLineMap → swap DOM content per page.
+// Height-based pagination: measure each element's offsetHeight at column width,
+// then greedily fill col-A → col-B → new page. goToPage swaps DOM content per page.
 
 function buildPageLineMap() {
-    const pW = exactPageW || colVp.clientWidth;
-    const vpLeft = colVp.getBoundingClientRect().left;
-    const byPage = {};
+    const h = parseFloat(rd.style.height);
+    if (isNaN(h) || h <= 0) return;
+
+    // Read column gap while columns-mode is active, then temporarily switch to flat layout
+    const gap = parseFloat(getComputedStyle(rd).columnGap) || 0;
+    const colW = Math.floor((colVp.clientWidth - gap) / 2);
+
+    rd.classList.remove('columns-mode');
+    rd.style.width    = colW + 'px';
+    rd.style.maxWidth = 'none';
+
+    // Greedy two-column fill
+    const pages = [];
+    let page = [], colIdx = 0, colH = 0;
     lineElements.forEach((el, i) => {
         if (!el) return;
-        const p = Math.max(0, Math.floor((el.getBoundingClientRect().left - vpLeft) / pW));
-        if (!byPage[p]) byPage[p] = [];
-        byPage[p].push(i);
-    });
-    const raw = [];
-    for (let p = 0; p < totalPages; p++) raw.push(byPage[p] || []);
-
-    // Merge pages whose lines are all blank into the previous page
-    const hasText = lines => lines.some(i => rawLines[i].trim().length > 0);
-    const merged = [];
-    for (const lines of raw) {
-        if (!hasText(lines) && merged.length > 0) {
-            merged[merged.length - 1].push(...lines);
-        } else {
-            merged.push([...lines]);
+        const elH = el.offsetHeight;
+        if (colH > 0 && colH + elH > h) {
+            if (colIdx === 0) { colIdx = 1; colH = 0; }
+            else { pages.push([...page]); page = []; colIdx = 0; colH = 0; }
         }
-    }
-    pageLineMap = merged;
-    totalPages = merged.length;
+        page.push(i);
+        colH += elH;
+    });
+    if (page.length) pages.push(page);
 
-    lineToPage = new Array(rawLines.length).fill(0);
-    pageLineMap.forEach((lines, p) => lines.forEach(i => { lineToPage[i] = p; }));
+    rd.style.width    = '';
+    rd.style.maxWidth = '';
+    rd.classList.add('columns-mode');
+
+    // Merge blank-only pages into the previous page
+    const hasText = ls => ls.some(i => rawLines[i]?.trim().length > 0);
+    const merged = [];
+    for (const p of pages) {
+        if (!hasText(p) && merged.length > 0) merged[merged.length - 1].push(...p);
+        else merged.push([...p]);
+    }
+
+    pageLineMap = merged;
+    totalPages  = merged.length || 1;
+    lineToPage  = new Array(rawLines.length).fill(0);
+    pageLineMap.forEach((ls, p) => ls.forEach(i => { lineToPage[i] = p; }));
 }
 
 function restoreAllElements() {
     const frag = document.createDocumentFragment();
     lineElements.forEach(el => { if (el) frag.appendChild(el); });
     rd.replaceChildren(frag);
+    rd.style.transform = '';
 }
 
 function applyColumnsMode() {
@@ -1305,11 +1330,12 @@ function applyColumnsMode() {
         return;
     }
 
-    // Slow path: full CSS column measurement
+    // Slow path: height-based measurement
     requestAnimationFrame(() => requestAnimationFrame(() => {
-        totalPages = Math.max(1, Math.round(rd.scrollWidth / colVp.clientWidth));
-        exactPageW = rd.scrollWidth / totalPages;
+        restoreAllElements();              // ensure all elements are in rd
+        exactPageW = colVp.clientWidth;
         buildPageLineMap();
+        totalPages = pageLineMap.length;
         layoutCache = {
             bookId: currentBookId, fontSize, fontFamily,
             vpW: colVp.clientWidth, ctH: h,
@@ -1395,9 +1421,9 @@ window.addEventListener('resize', debounce(() => {
     const vPad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
     rd.style.height = (ct.clientHeight - vPad) + 'px';
     requestAnimationFrame(() => requestAnimationFrame(() => {
-        totalPages = Math.max(1, Math.round(rd.scrollWidth / colVp.clientWidth));
-        exactPageW = rd.scrollWidth / totalPages;
+        exactPageW = colVp.clientWidth;
         buildPageLineMap();
+        totalPages = pageLineMap.length;
         layoutCache = {
             bookId: currentBookId, fontSize, fontFamily,
             vpW: colVp.clientWidth, ctH: ct.clientHeight - vPad,

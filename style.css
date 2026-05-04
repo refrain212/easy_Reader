@@ -347,7 +347,7 @@ button:hover { background: var(--border); }
     column-gap: 3em;
     column-rule: 1px solid var(--border);
     column-fill: auto;
-    /* height set by JS; content is swapped per page — no translateX */
+    /* height set by JS; goToPage swaps DOM content per page */
 }
 .ln { min-height: .2em; }
 .ln-h1 {
